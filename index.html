@@ -158,3 +158,221 @@ function quickAdd(){
  DB.operations.push({id:'o'+Date.now()+'_'+Math.random().toString(36).slice(2,7),type:'expense',amount,catId:cat?.id||'other',accountId:DB.accounts[0]?.id||'',note,date:todayISO()});
  if(save()){input.value='';curMonth=todayISO().slice(0,7);renderCurrent();}
 }
+function renderHome(){
+ const mOps=DB.operations.filter(o=>monthKey(o.date)===curMonth);
+ const date=new Date(curMonth+'-15T12:00:00');
+ $('mlabel').textContent=date.toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
+ let income=0,expense=0;
+ mOps.forEach(o=>{if(o.type==='income')income+=Number(o.amount)||0;else expense+=Number(o.amount)||0;});
+ const net=income-expense;
+ $('bigSum').textContent=fmt(net);
+ $('bigSum').className='big'+(net<0?' neg':'');
+ $('balanceCard').className='balance-card'+(net<0?' neg':'');
+ $('inSum').textContent='+'+fmt(income);
+ $('outSum').textContent='−'+fmt(expense);
+ const query=$('search').value.trim().toLowerCase();
+ const filtered=mOps.filter(o=>{
+  if(!query)return true;
+  return ((o.note||'')+' '+getCat(o.catId).name).toLowerCase().includes(query);
+ });
+ const byDay={};
+ filtered.forEach(o=>(byDay[o.date]||(byDay[o.date]=[])).push(o));
+ const days=Object.keys(byDay).sort().reverse();
+ const root=$('opsByDay');
+ if(!days.length){
+  root.innerHTML='<div class="empty">'+(query?'Ничего не найдено':'Пока нет операций. Добавь первую запись.')+'</div>';
+  return;
+ }
+ let html='';
+ days.forEach(day=>{
+  html+='<div class="dh">'+esc(dayLabelRu(day))+'</div>';
+  byDay[day].forEach(op=>{
+   const c=getCat(op.catId),inc=op.type==='income';
+   html+='<div class="op" onclick="openOpModal('+JSON.stringify(op.id)+')"><div class="ic" style="background:'+catColor(c.name)+'22">'+esc(c.icon)+'</div><div class="mid"><div class="n">'+esc(op.note||c.name)+'</div><div class="c">'+esc(c.name)+'</div></div><div class="amt '+(inc?'green':'red')+'">'+(inc?'+':'−')+fmt(op.amount)+'</div></div>';
+  });
+ });
+ root.innerHTML=html;
+}
+function switchTab(name){
+ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+ document.querySelectorAll('.tabbar .tb').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
+ $('s-'+name).classList.add('on');
+ window.scrollTo(0,0);
+ if(name==='stats')renderStats();
+ if(name==='budget')renderBudget();
+ if(name==='more')renderMore();
+}
+function renderStats(){
+ const ops=DB.operations.filter(o=>monthKey(o.date)===curMonth);
+ const expenses=ops.filter(o=>o.type==='expense');
+ const income=ops.filter(o=>o.type==='income').reduce((s,o)=>s+Number(o.amount),0);
+ const total=expenses.reduce((s,o)=>s+Number(o.amount),0);
+ const groups={};
+ expenses.forEach(o=>groups[o.catId]=(groups[o.catId]||0)+Number(o.amount));
+ const entries=Object.entries(groups).sort((a,b)=>b[1]-a[1]);
+ const canvas=$('pie'),ctx=canvas.getContext('2d');
+ ctx.clearRect(0,0,160,160);
+ if(!total){
+  ctx.fillStyle='#26263a';ctx.beginPath();ctx.arc(80,80,70,0,Math.PI*2);ctx.fill();
+ }else{
+  let start=-Math.PI/2;
+  entries.forEach(([id,value])=>{
+   const c=getCat(id),angle=value/total*Math.PI*2;
+   ctx.beginPath();ctx.moveTo(80,80);ctx.arc(80,80,70,start,start+angle);
+   ctx.closePath();ctx.fillStyle=catColor(c.name);ctx.fill();start+=angle;
+  });
+  ctx.globalCompositeOperation='destination-out';
+  ctx.beginPath();ctx.arc(80,80,38,0,Math.PI*2);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+ }
+ $('pieLegend').innerHTML=entries.map(([id,value])=>{
+  const c=getCat(id);
+  return '<div><span class="dotc" style="background:'+catColor(c.name)+'"></span><span>'+esc(c.icon+' '+c.name)+' — '+fmt(value)+' ('+Math.round(value/(total||1)*100)+'%)</span></div>';
+ }).join('')||'<div class="small">Пока нет расходов</div>';
+ $('summary').innerHTML='Расходы: <b>'+fmt(total)+'</b><br>Доходы: <b>'+fmt(income)+'</b><br>Остаток: <b>'+fmt(income-total)+'</b><br>Количество операций: <b>'+ops.length+'</b>';
+ $('advice').innerHTML=total>income&&income>0
+  ?'<div class="adv"><div class="ai">⚠️</div><div class="at">Расходы превышают доходы.</div></div>'
+  :'<div class="adv"><div class="ai">💡</div><div class="at">Добавляй операции, чтобы следить за своими расходами.</div></div>';
+}
+function renderBudget(){
+ const spent={};
+ DB.operations.filter(o=>o.type==='expense'&&monthKey(o.date)===curMonth)
+ .forEach(o=>spent[o.catId]=(spent[o.catId]||0)+Number(o.amount));
+ const cats=DB.categories.filter(c=>c.type==='expense'&&Number(DB.budget[c.id])>0);
+ if(!cats.length){
+  $('budgetList').innerHTML='<div class="empty">Лимиты пока не заданы. Нажми «Изменить».</div>';
+  return;
+ }
+ $('budgetList').innerHTML=cats.map(c=>{
+  const limit=Number(DB.budget[c.id]),used=spent[c.id]||0,pct=used/limit*100;
+  return '<div style="margin:14px 0"><div class="row"><span>'+esc(c.icon+' '+c.name)+'</span><span class="small">'+fmt(used)+' / '+fmt(limit)+'</span></div><div class="bar '+(pct>100?'over':pct>80?'warn':'')+'"><div style="width:'+Math.min(100,pct)+'%"></div></div></div>';
+ }).join('');
+}
+function renderMore(){
+ $('accountsList').innerHTML=DB.accounts.map(a=>{
+  const balance=DB.operations.filter(o=>o.accountId===a.id)
+   .reduce((s,o)=>s+(o.type==='income'?1:-1)*Number(o.amount),Number(a.balance)||0);
+  return '<div class="row" style="padding:9px 0"><span>'+esc(a.name)+'</span><b>'+fmt(balance)+'</b></div>';
+ }).join('');
+ $('catsList').innerHTML=DB.categories.map(c=>
+  '<div class="row" style="padding:8px 0"><span>'+esc(c.icon+' '+c.name)+'</span><span class="small">'+(c.type==='income'?'доход':'расход')+'</span></div>'
+ ).join('');
+}
+function fillCats(){
+ const type=$('opType').value,old=$('opCat').value;
+ $('opCat').innerHTML=DB.categories.filter(c=>c.type===type)
+  .map(c=>'<option value="'+esc(c.id)+'">'+esc(c.icon+' '+c.name)+'</option>').join('');
+ if(DB.categories.some(c=>c.id===old&&c.type===type))$('opCat').value=old;
+}
+function fillAccounts(selected){
+ $('opAccount').innerHTML=DB.accounts.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>').join('');
+ if(selected&&DB.accounts.some(a=>a.id===selected))$('opAccount').value=selected;
+}
+function openOpModal(id){
+ const op=id?DB.operations.find(o=>o.id===id):null;
+ $('opId').value=op?op.id:'';
+ $('opTitle').textContent=op?'Редактировать операцию':'Новая операция';
+ $('opType').value=op?.type||'expense';
+ $('opAmount').value=op?op.amount:'';
+ $('opNote').value=op?.note||'';
+ $('opDate').value=op?.date||todayISO();
+ fillCats();
+ if(op?.catId)$('opCat').value=op.catId;
+ fillAccounts(op?.accountId||DB.accounts[0]?.id);
+ $('opDelete').style.display=op?'inline-block':'none';
+ $('opModal').classList.add('on');
+}
+function closeM(id){$(id).classList.remove('on');}
+function saveOp(){
+ const amount=Number($('opAmount').value);
+ if(!Number.isFinite(amount)||amount<=0){alert('Введи сумму больше нуля');return;}
+ const date=$('opDate').value;
+ if(!date){alert('Выбери дату');return;}
+ const id=$('opId').value;
+ const data={type:$('opType').value,amount,catId:$('opCat').value,accountId:$('opAccount').value,note:$('opNote').value.trim(),date};
+ if(id){
+  const i=DB.operations.findIndex(o=>o.id===id);
+  if(i>=0)DB.operations[i]={...DB.operations[i],...data};
+ }else{
+  DB.operations.push({id:'o'+Date.now(),...data});
+ }
+ if(save()){
+  closeM('opModal');curMonth=monthKey(date);renderCurrent();
+ }
+}
+function deleteOp(){
+ const id=$('opId').value;
+ if(!id||!confirm('Удалить эту операцию?'))return;
+ DB.operations=DB.operations.filter(o=>o.id!==id);
+ if(save()){closeM('opModal');renderCurrent();}
+}
+function openCatEdit(){
+ $('catName').value='';$('catIcon').value='📁';
+ $('catType').value='expense';$('catModal').classList.add('on');
+}
+function saveCat(){
+ const name=$('catName').value.trim();
+ if(!name){alert('Введи название');return;}
+ if(DB.categories.some(c=>c.name.toLowerCase()===name.toLowerCase()&&c.type===$('catType').value)){
+  alert('Такая категория уже есть');return;
+ }
+ DB.categories.push({id:'c'+Date.now(),name,icon:$('catIcon').value.trim()||'📁',type:$('catType').value});
+ if(save()){closeM('catModal');renderMore();}
+}
+function openBudgetEdit(){
+ $('budgetEditList').innerHTML=DB.categories.filter(c=>c.type==='expense').map(c=>
+  '<label>'+esc(c.icon+' '+c.name)+'</label><input type="number" min="0" step="0.01" data-bcat="'+esc(c.id)+'" value="'+(Number(DB.budget[c.id])||'')+'" placeholder="Без лимита">'
+ ).join('');
+ $('budgetModal').classList.add('on');
+}
+function saveBudget(){
+ const budget={};
+ document.querySelectorAll('#budgetEditList input[data-bcat]').forEach(input=>{
+  const value=Number(input.value);
+  if(input.value.trim()&&Number.isFinite(value)&&value>0)budget[input.dataset.bcat]=value;
+ });
+ DB.budget=budget;
+ if(save()){closeM('budgetModal');renderBudget();}
+}
+function exportData(){
+ try{
+  const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download='moy-balans-'+todayISO()+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }catch(e){alert('Не удалось экспортировать данные: '+e.message);}
+}
+function importData(event){
+ const file=event.target.files?.[0];if(!file)return;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   const incoming=JSON.parse(reader.result);
+   if(!incoming||!Array.isArray(incoming.operations)||!Array.isArray(incoming.categories)||!Array.isArray(incoming.accounts))throw new Error('Неверный формат файла');
+   if(!confirm('Импорт заменит текущие данные. Продолжить?'))return;
+   DB={...clone(DEFAULT),...incoming};
+   if(save()){alert('Данные импортированы');renderCurrent();renderMore();}
+  }catch(e){alert('Ошибка импорта: '+e.message);}
+  finally{$('importFile').value='';}
+ };
+ reader.readAsText(file);
+}
+function resetAll(){
+ if(!confirm('Удалить все операции, категории и лимиты? Это нельзя отменить.'))return;
+ DB=clone(DEFAULT);
+ if(save()){curMonth=todayISO().slice(0,7);renderCurrent();renderMore();switchTab('home');}
+}
+document.querySelectorAll('.modal').forEach(modal=>modal.addEventListener('click',e=>{
+ if(e.target===modal)modal.classList.remove('on');
+}));
+document.addEventListener('keydown',e=>{
+ if(e.key==='Escape')document.querySelectorAll('.modal.on').forEach(m=>m.classList.remove('on'));
+});
+window.addEventListener('storage',e=>{
+ if(e.key===STORAGE_KEY){DB=loadDB();renderCurrent();renderMore();}
+});
+renderHome();
+</script>
+</body>
+</html>
